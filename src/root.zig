@@ -1,7 +1,7 @@
 //! A Universally Unique Identifier (UUID) implementation in Zig.
 //!
 //! Conforms to RFC 9562 (https://www.rfc-editor.org/rfc/rfc9562.html).
-//! Currently supports UUID version 7 (time-ordered, with random bits) and
+//! Currently supports UUID version 7 (time-ordered, with random bits) and version 4 ( Random)
 //! provides parsing and formatting utilities for the standard
 //! `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` string representation.
 
@@ -71,11 +71,43 @@ pub fn initV7() Self {
     return uuid;
 }
 
-/// Creates a new UUID version 4 (random).
-/// Note: This is currently a stub and returns a nil UUID.
+/// Creates a new UUID version 4 (random) as defined in RFC 9562.
+///
+/// Generates 122 bits of cryptographically secure random data and sets the
+/// version field to `4` (`0b0100`) and the variant field to `0b10`.
+///
+///  ```
+///  0                   1                   2                   3
+///  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                           random_a                            |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |          random_a             |  ver  |       random_b        |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |var|                       random_c                            |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+/// |                           random_c                            |
+/// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+///  ```
+///
+/// See https://datatracker.ietf.org/doc/html/rfc9562#name-uuid-version-4
 pub fn initV4() Self {
+    const rand = std.crypto.random;
+
+    const version_mask: u128 = @as(u128, 4) << 76; // 128 - 4 - 48
+    const variant_mask: u128 = @as(u128, variant_value) << 62; // 128 - 2 - 64
+
+    var bits = rand.int(u128);
+
+    // Clear version bits
+    bits &= ~(@as(u128, 0xF) << 76);
+    // Clear variant bits
+    bits &= ~(@as(u128, 0x3) << 62);
+
+    bits |= version_mask | variant_mask;
+
     return Self{
-        .bits = 0,
+        .bits = bits,
     };
 }
 
@@ -164,111 +196,74 @@ pub fn toString(self: Self) [36]u8 {
     return buf;
 }
 
-test "from integer" {
-    const bitArray: u128 = 0b11111000000111010100111110101110011111011110110000010001110100001010011101100101000000001010000011001001000111100110101111110110;
+// ===================== Reusable test helpers =====================
+// These helpers are parameterized by a generator function and an expected
+// version number so they can be shared across all UUID versions.
 
-    const uuid = UUID{ .bits = bitArray };
-    // var buf : [36]u8 = undefined;
-    const string = uuid.toString();
+const GeneratorFn = *const fn () Self;
 
-    // std.debug.print("from integer string {s} \n", .{string});
-    try std.testing.expectEqual(true, std.mem.eql(u8, &string, "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"));
+fn expectCorrectVersion(generator: GeneratorFn, expected_version: u4) !void {
+    const uuid = generator();
+    try std.testing.expectEqual(expected_version, uuid.version());
 }
 
-test "uuid v7 generation" {
-    const iterations = 256;
-    var generated: [iterations]UUID = undefined;
+fn expectCorrectVariant(generator: GeneratorFn) !void {
+    const uuid = generator();
+    try std.testing.expectEqual(@as(u2, 0b10), uuid.variant());
+}
 
-    for (0..iterations) |i| {
-        const uuid = UUID.initV7();
+fn expectVersionAndVariantAcrossManyGenerations(generator: GeneratorFn, expected_version: u4) !void {
+    for (0..100) |_| {
+        const uuid = generator();
+        try std.testing.expectEqual(expected_version, uuid.version());
+        try std.testing.expectEqual(@as(u2, 0b10), uuid.variant());
+    }
+}
 
-        // each new generated uuid should be unique
-        for (generated[0..i]) |prev| {
-            try std.testing.expect(!uuid.eql(prev));
+fn expectVersionCharInString(generator: GeneratorFn, expected_char: u8) !void {
+    const uuid = generator();
+    const str = uuid.toString();
+    // The version nibble appears at position 14 in the string (after "xxxxxxxx-xxxx-")
+    try std.testing.expectEqual(expected_char, str[14]);
+}
+
+fn expectVariantCharInString(generator: GeneratorFn) !void {
+    for (0..100) |_| {
+        const uuid = generator();
+        const str = uuid.toString();
+        // The variant nibble appears at position 19 in the string (after "xxxxxxxx-xxxx-xxxx-")
+        const variant_char = str[19];
+        const valid = (variant_char == '8' or variant_char == '9' or variant_char == 'a' or variant_char == 'b');
+        try std.testing.expect(valid);
+    }
+}
+
+fn expectAllUnique(generator: GeneratorFn, count: usize) !void {
+    var uuids: [1000]u128 = undefined;
+    std.debug.assert(count <= uuids.len);
+
+    for (0..count) |i| {
+        uuids[i] = generator().bits;
+    }
+
+    for (0..count) |i| {
+        for (i + 1..count) |j| {
+            try std.testing.expect(uuids[i] != uuids[j]);
         }
-
-        generated[i] = uuid;
     }
 }
 
-test "to and from string" {
-    const uuid = UUID.initV7();
-
-    const string = uuid.toString();
-    // std.debug.print("string {s}", .{string});
-    const uuid2 = try UUID.fromString(&string);
-
-    try std.testing.expect(uuid.bits == uuid2.bits);
-}
-
-// Benchmark tests
-test "Benchmark v7 creation" {
-    const iterations = 1_000_000;
-
-    var timer = try std.time.Timer.start();
-
-    var sum: u128 = 0; // prevent optimization
-
-    for (0..iterations) |_| {
-        const uuid = UUID.initV7();
-        sum +%= uuid.bits; // use the value
+fn expectToStringFromStringRoundTrip(generator: GeneratorFn) !void {
+    for (0..50) |_| {
+        const uuid = generator();
+        const str = uuid.toString();
+        const parsed = try UUID.fromString(&str);
+        try std.testing.expectEqual(uuid.bits, parsed.bits);
     }
-
-    const elapsed = timer.read();
-
-    const ns_per_op = elapsed / iterations;
-
-    std.debug.print(
-        \\UUIDv7 Benchmark (Zig)
-        \\Iterations: {}
-        \\Total time: {} ms
-        \\ns/op: {}
-        \\ignore: {}
-        \\
-    ,
-        .{
-            iterations,
-            elapsed / 1_000_000,
-            ns_per_op,
-            sum,
-        },
-    );
 }
 
-test "Benchmark to string" {
-    const iterations = 1_000_000;
-
-    const uuid = UUID.initV7();
-
-    var timer = try std.time.Timer.start();
-
-    for (0..iterations) |_| {
-        std.mem.doNotOptimizeAway(uuid.toString());
-    }
-
-    const elapsed = timer.read();
-
-    const ns_per_op = elapsed / iterations;
-
-    std.debug.print(
-        \\Benchmark to string (Zig)
-        \\Iterations: {}
-        \\Total time: {} ms
-        \\ns/op: {}
-        \\
-    ,
-        .{
-            iterations,
-            elapsed / 1_000_000,
-            ns_per_op,
-        },
-    );
-}
-
-// ===================== toString format tests =====================
-
-test "toString produces correct 8-4-4-4-12 format with hyphens" {
-    const uuid = UUID.initV7();
+fn expectToStringFormat(generator: GeneratorFn) !void {
+    const uuid = generator();
     const str = uuid.toString();
 
     // Check total length
@@ -281,14 +276,126 @@ test "toString produces correct 8-4-4-4-12 format with hyphens" {
     try std.testing.expectEqual(@as(u8, '-'), str[23]);
 
     // Check all non-hyphen characters are valid lowercase hex
+    var hyphen_count: usize = 0;
     for (str, 0..) |c, i| {
         if (i == 8 or i == 13 or i == 18 or i == 23) {
             try std.testing.expectEqual(@as(u8, '-'), c);
+            hyphen_count += 1;
         } else {
             const is_hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
             try std.testing.expect(is_hex);
+            // Ensure no uppercase
+            const is_upper = (c >= 'A' and c <= 'F');
+            try std.testing.expect(!is_upper);
         }
     }
+    try std.testing.expectEqual(@as(usize, 4), hyphen_count);
+}
+
+// ===================== V7 tests (shared helpers) =====================
+
+test "v7 has correct version bits" {
+    try expectCorrectVersion(initV7, 7);
+}
+
+test "v7 has correct variant bits" {
+    try expectCorrectVariant(initV7);
+}
+
+test "v7 version and variant correct across many generations" {
+    try expectVersionAndVariantAcrossManyGenerations(initV7, 7);
+}
+
+test "v7 version character is '7' in string representation" {
+    try expectVersionCharInString(initV7, '7');
+}
+
+test "v7 variant character is 8, 9, a, or b in string representation" {
+    try expectVariantCharInString(initV7);
+}
+
+test "v7 multiple UUIDs are all unique" {
+    try expectAllUnique(initV7, 256);
+}
+
+test "v7 toString and fromString round-trip" {
+    try expectToStringFromStringRoundTrip(initV7);
+}
+
+test "v7 toString produces correct format" {
+    try expectToStringFormat(initV7);
+}
+
+// ===================== V4 tests (shared helpers) =====================
+
+test "v4 has correct version bits" {
+    try expectCorrectVersion(initV4, 4);
+}
+
+test "v4 has correct variant bits" {
+    try expectCorrectVariant(initV4);
+}
+
+test "v4 version and variant correct across many generations" {
+    try expectVersionAndVariantAcrossManyGenerations(initV4, 4);
+}
+
+test "v4 version character is '4' in string representation" {
+    try expectVersionCharInString(initV4, '4');
+}
+
+test "v4 variant character is 8, 9, a, or b in string representation" {
+    try expectVariantCharInString(initV4);
+}
+
+test "v4 multiple UUIDs are all unique" {
+    try expectAllUnique(initV4, 256);
+}
+
+test "v4 toString and fromString round-trip" {
+    try expectToStringFromStringRoundTrip(initV4);
+}
+
+test "v4 toString produces correct format" {
+    try expectToStringFormat(initV4);
+}
+
+// ===================== V7-specific tests =====================
+
+test "v7 UUID timestamp is close to current time" {
+    const before_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+    const uuid = UUID.initV7();
+    const after_ms = @as(u64, @intCast(std.time.milliTimestamp()));
+
+    // Extract the 48-bit timestamp from the top bits
+    const ts = @as(u48, @truncate(uuid.bits >> 80));
+    const ts_u64 = @as(u64, ts);
+
+    // Timestamp should be between before and after
+    try std.testing.expect(ts_u64 >= before_ms);
+    try std.testing.expect(ts_u64 <= after_ms);
+}
+
+test "v7 UUIDs generated sequentially have non-decreasing timestamps" {
+    const uuid1 = UUID.initV7();
+    const uuid2 = UUID.initV7();
+
+    // The timestamp is in the most significant 48 bits, so a later (or same)
+    // timestamp should produce a >= value.
+    const ts1 = @as(u48, @truncate(uuid1.bits >> 80));
+    const ts2 = @as(u48, @truncate(uuid2.bits >> 80));
+    try std.testing.expect(ts2 >= ts1);
+}
+
+// ===================== toString known-value tests =====================
+
+test "from integer" {
+    const bitArray: u128 = 0b11111000000111010100111110101110011111011110110000010001110100001010011101100101000000001010000011001001000111100110101111110110;
+
+    const uuid = UUID{ .bits = bitArray };
+    const string = uuid.toString();
+
+    try std.testing.expectEqual(true, std.mem.eql(u8, &string, "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"));
 }
 
 test "toString produces lowercase hex only" {
@@ -300,7 +407,6 @@ test "toString produces lowercase hex only" {
         if (c != '-') {
             const is_lower_hex = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
             try std.testing.expect(is_lower_hex);
-            // Ensure no uppercase
             const is_upper = (c >= 'A' and c <= 'F');
             try std.testing.expect(!is_upper);
         }
@@ -317,30 +423,6 @@ test "max UUID (all ones) toString" {
     const uuid = UUID{ .bits = std.math.maxInt(u128) };
     const str = uuid.toString();
     try std.testing.expectEqualStrings("ffffffff-ffff-ffff-ffff-ffffffffffff", &str);
-}
-
-test "toString segment lengths are correct" {
-    const uuid = UUID.initV7();
-    const str = uuid.toString();
-
-    // Split by hyphens and verify segment lengths: 8-4-4-4-12
-    // Segment 1: indices 0..8 (len 8)
-    // Segment 2: indices 9..13 (len 4)
-    // Segment 3: indices 14..18 (len 4)
-    // Segment 4: indices 19..23 (len 4)
-    // Segment 5: indices 24..36 (len 12)
-    try std.testing.expectEqual(@as(usize, 8), 8); // 0 to 7
-    try std.testing.expectEqual(@as(u8, '-'), str[8]);
-    try std.testing.expectEqual(@as(u8, '-'), str[13]);
-    try std.testing.expectEqual(@as(u8, '-'), str[18]);
-    try std.testing.expectEqual(@as(u8, '-'), str[23]);
-
-    // No other hyphens
-    var hyphen_count: usize = 0;
-    for (str) |c| {
-        if (c == '-') hyphen_count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 4), hyphen_count);
 }
 
 // ===================== fromString tests =====================
@@ -361,21 +443,20 @@ test "fromString with hyphenated string" {
 
 test "fromString rejects too-short strings" {
     const result = UUID.fromString("f81d4fae-7dec-11d0-a765");
-    try std.testing.expectError(error.InvalidUuuidString, result);
+    try std.testing.expectError(error.InvalidUuidString, result);
 }
 
 test "fromString rejects too-long strings" {
     const result = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6aa");
-    try std.testing.expectError(error.InvalidUuuidString, result);
+    try std.testing.expectError(error.InvalidUuidString, result);
 }
 
 test "fromString rejects empty string" {
     const result = UUID.fromString("");
-    try std.testing.expectError(error.InvalidUuuidString, result);
+    try std.testing.expectError(error.InvalidUuidString, result);
 }
 
 test "fromString rejects invalid hex characters" {
-    // 'g' is not a valid hex character
     const result = UUID.fromString("g81d4fae-7dec-11d0-a765-00a0c91e6bf6");
     try std.testing.expectError(error.InvalidCharacter, result);
 }
@@ -394,59 +475,21 @@ test "fromString round-trip with non-hyphenated input produces hyphenated output
     try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", &result_str);
 }
 
-// ===================== V7 correctness tests =====================
-
-test "v7 UUID has correct version bits" {
-    const uuid = UUID.initV7();
-    try std.testing.expectEqual(@as(u4, 7), uuid.version());
+test "fromString and toString preserve known RFC-style UUID" {
+    const rfc_str = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
+    const uuid = try UUID.fromString(rfc_str);
+    const result = uuid.toString();
+    try std.testing.expectEqualStrings(rfc_str, &result);
 }
 
-test "v7 UUID has correct variant bits" {
-    const uuid = UUID.initV7();
-    const variant_val = uuid.variant();
-    try std.testing.expectEqual(@as(u2, 0b10), variant_val);
+test "fromString preserves bits for all-zero UUID" {
+    const uuid = try UUID.fromString("00000000-0000-0000-0000-000000000000");
+    try std.testing.expectEqual(@as(u128, 0), uuid.bits);
 }
 
-test "v7 UUID version and variant correct across many generations" {
-    for (0..100) |_| {
-        const uuid = UUID.initV7();
-        const ver = uuid.version();
-        const variant_val = uuid.variant();
-        try std.testing.expectEqual(@as(u4, 7), ver);
-        try std.testing.expectEqual(@as(u2, 0b10), variant_val);
-    }
-}
-
-test "v7 UUID version character is '7' in string representation" {
-    const uuid = UUID.initV7();
-    const str = uuid.toString();
-    // The version nibble appears at position 14 in the string (index 14, after "xxxxxxxx-xxxx-")
-    try std.testing.expectEqual(@as(u8, '7'), str[14]);
-}
-
-test "v7 UUID variant character is 8, 9, a, or b in string representation" {
-    for (0..100) |_| {
-        const uuid = UUID.initV7();
-        const str = uuid.toString();
-        // The variant nibble appears at position 19 in the string (after "xxxxxxxx-xxxx-xxxx-")
-        const variant_char = str[19];
-        const valid = (variant_char == '8' or variant_char == '9' or variant_char == 'a' or variant_char == 'b');
-        try std.testing.expect(valid);
-    }
-}
-
-test "v7 UUID timestamp is close to current time" {
-    const before_ms = @as(u64, @intCast(std.time.milliTimestamp()));
-    const uuid = UUID.initV7();
-    const after_ms = @as(u64, @intCast(std.time.milliTimestamp()));
-
-    // Extract the 48-bit timestamp from the top bits
-    const ts = @as(u48, @truncate(uuid.bits >> 80));
-    const ts_u64 = @as(u64, ts);
-
-    // Timestamp should be between before and after
-    try std.testing.expect(ts_u64 >= before_ms);
-    try std.testing.expect(ts_u64 <= after_ms);
+test "fromString preserves bits for all-f UUID" {
+    const uuid = try UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff");
+    try std.testing.expectEqual(std.math.maxInt(u128), uuid.bits);
 }
 
 // ===================== eql tests =====================
@@ -501,60 +544,78 @@ test "greaterThan with max and min values" {
     try std.testing.expect(!min.greaterThan(max));
 }
 
-// ===================== V7 ordering / monotonicity tests =====================
+// ===================== Benchmark tests =====================
+fn benchmarkCreation(title: []const u8 , initFunc:GeneratorFn) !void {
+    const iterations = 1_000_000;
 
-test "v7 UUIDs generated sequentially have non-decreasing timestamps" {
-    const uuid1 = UUID.initV7();
-    const uuid2 = UUID.initV7();
+    var timer = try std.time.Timer.start();
 
-    // The timestamp is in the most significant 48 bits, so a later (or same)
-    // timestamp should produce a >= value.
-    const ts1 = @as(u48, @truncate(uuid1.bits >> 80));
-    const ts2 = @as(u48, @truncate(uuid2.bits >> 80));
-    try std.testing.expect(ts2 >= ts1);
-}
+    var sum: u128 = 0; // prevent optimization
 
-// ===================== Specific known-value tests =====================
-
-test "fromString and toString preserve known RFC-style UUID" {
-    // A well-known example UUID from RFC 9562
-    const rfc_str = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
-    const uuid = try UUID.fromString(rfc_str);
-    const result = uuid.toString();
-    try std.testing.expectEqualStrings(rfc_str, &result);
-}
-
-test "fromString preserves bits for all-zero UUID" {
-    const uuid = try UUID.fromString("00000000-0000-0000-0000-000000000000");
-    try std.testing.expectEqual(@as(u128, 0), uuid.bits);
-}
-
-test "fromString preserves bits for all-f UUID" {
-    const uuid = try UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff");
-    try std.testing.expectEqual(std.math.maxInt(u128), uuid.bits);
-}
-
-test "multiple v7 UUIDs are all unique" {
-    const count = 1000;
-    var uuids: [count]u128 = undefined;
-
-    for (0..count) |i| {
-        uuids[i] = UUID.initV7().bits;
+    for (0..iterations) |_| {
+        const uuid = initFunc() ;
+        sum +%= uuid.bits; // use the value
     }
 
-    // Check every pair is unique
-    for (0..count) |i| {
-        for (i + 1..count) |j| {
-            try std.testing.expect(uuids[i] != uuids[j]);
-        }
-    }
+    const elapsed = timer.read();
+
+    const ns_per_op = elapsed / iterations;
+
+    std.debug.print(
+        \\{s} Benchmark 
+        \\Iterations: {}
+        \\Total time: {} ms
+        \\ns/op: {}
+        \\ignore: {}
+        \\
+        \\
+    ,
+        .{
+            title,
+            iterations,
+            elapsed / 1_000_000,
+            ns_per_op,
+            sum,
+        },
+    );
+
 }
 
-test "toString and fromString round-trip for v7" {
-    for (0..50) |_| {
-        const uuid = UUID.initV7();
-        const str = uuid.toString();
-        const parsed = try UUID.fromString(&str);
-        try std.testing.expectEqual(uuid.bits, parsed.bits);
+test "Benchmark v7 creation" {
+   try benchmarkCreation("UUIDv7", initV7) ;
+}
+
+
+test "Benchmark v4 creation" {
+   try benchmarkCreation("UUIDv7", initV4) ;
+}
+
+test "Benchmark to string" {
+    const iterations = 1_000_000;
+
+    const uuid = UUID.initV7();
+
+    var timer = try std.time.Timer.start();
+
+    for (0..iterations) |_| {
+        std.mem.doNotOptimizeAway(uuid.toString());
     }
+
+    const elapsed = timer.read();
+
+    const ns_per_op = elapsed / iterations;
+
+    std.debug.print(
+        \\Benchmark to string
+        \\Iterations: {}
+        \\Total time: {} ms
+        \\ns/op: {}
+        \\
+    ,
+        .{
+            iterations,
+            elapsed / 1_000_000,
+            ns_per_op,
+        },
+    );
 }
