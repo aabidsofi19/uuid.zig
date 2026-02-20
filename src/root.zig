@@ -3,7 +3,7 @@ const std = @import("std");
 
 
 pub const UUID = struct {
-    bits : std.bit_set.IntegerBitSet(128) , // 128 bits
+    bits : u128 ,
 
 
     const Self = @This();
@@ -29,36 +29,18 @@ pub const UUID = struct {
         const rand_a_mask: u128 = @as(u128,rand_a) << 64;   // 128 - 12 - 52
         const rand_b_mask : u128 = @as(u128,rand_b);        // 128 - 62 - 66
 
-        var bitSet = std.bit_set.IntegerBitSet(128).initEmpty();
-        bitSet.mask |= ts_mask | version_mask | variant_mask | rand_a_mask | rand_b_mask;
+        const bits : u128 = ts_mask | version_mask | variant_mask | rand_a_mask | rand_b_mask;
 
 
         const uuid = Self{
-            .bits =  bitSet,
+            .bits =  bits,
         };
 
         return uuid;
 
     }
     
-    pub fn fromBitString(str : []const u8) !UUID  {
 
-      if (str.len != 128) {
-          return error.InvalidBitStringLength;
-      }
-
-      var bitSet = std.bit_set.IntegerBitSet(128).initEmpty();
-      for (str,0..) |c,i| {
-          switch (c) {
-            '1' => bitSet.set(127-i),
-            '0' => continue,
-            else => return error.InvalidBitString
-
-          }
-          
-      }
-      return .{ .bits = bitSet };
-    }
 
     pub fn fromString(str : []const u8) !Self {
        if (str.len != 36 ) {
@@ -78,8 +60,9 @@ pub const UUID = struct {
 
              // bit 0   = least significant bit
              // bit 127 = most significant bit
-             const bit_index = 127 - (offset + j);
-             if (self.bits.isSet(bit_index)) {
+             const bit_index: u7 = @intCast(127 - (offset + j));
+
+             if (((self.bits >> bit_index) & 1) != 0 ) {
                  const mask : u4 = 1 << (3-j) ;
                  nibble = nibble | mask;
              }
@@ -102,9 +85,9 @@ pub const UUID = struct {
 
 
 test "formatBitsToHex" {
-   const bitArray  = "11111000000111010100111110101110011111011110110000010001110100001010011101100101000000001010000011001001000111100110101111110110";
+   const bitArray: u128  = 0b11111000000111010100111110101110011111011110110000010001110100001010011101100101000000001010000011001001000111100110101111110110 ;
 
-   const uuid = try UUID.fromBitString(bitArray);
+   const uuid = UUID{.bits = bitArray};
    var buf : [36]u8 = undefined;
    const string =  try uuid.toString(&buf);
    std.debug.print("formatted string {s}\n", .{string});
