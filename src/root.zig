@@ -1,13 +1,30 @@
+//! A Universally Unique Identifier (UUID) implementation in Zig.
+//!
+//! Conforms to RFC 9562 (https://www.rfc-editor.org/rfc/rfc9562.html).
+//! Currently supports UUID version 7 (time-ordered, with random bits) and
+//! provides parsing and formatting utilities for the standard
+//! `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` string representation.
+
 const std = @import("std");
 
+/// The 128-bit binary representation of the UUID, stored as a single integer.
+/// The most significant 48 bits hold the timestamp in v7 UUIDs.
 bits: u128,
 
 const Self = @This();
 const UUID = Self;
-const Nil = Self{.bits = 0};
 
+/// The nil UUID, where all 128 bits are set to zero.
+/// See https://www.rfc-editor.org/rfc/rfc9562.html#name-nil-uuid
+pub const Nil = Self{ .bits = 0 };
+
+/// Lookup table mapping a 4-bit nibble value (0-15) to its lowercase ASCII hex character.
 const hex_chars = "0123456789abcdef";
-const variant_value: u2 = 0b10; //the variant specided in https://www.rfc-editor.org/rfc/rfc9562.html
+
+/// The two-bit variant field value (`10`) defined by RFC 9562,
+/// identifying this UUID as an RFC 4122 / RFC 9562 variant.
+/// See https://www.rfc-editor.org/rfc/rfc9562.html#name-variant-field
+const variant_value: u2 = 0b10;
 
 // follows uuid v7 implementation as defined in https://www.rfc-editor.org/rfc/rfc9562.html
 //
@@ -54,29 +71,40 @@ pub fn initV7() Self {
     return uuid;
 }
 
+/// Creates a new UUID version 4 (random).
+/// Note: This is currently a stub and returns a nil UUID.
 pub fn initV4() Self {
     return Self{
         .bits = 0,
     };
 }
 
-// Variant is bits 64-65 from the MSB
-// In the 128-bit value: bits [63:62] (shift right by 62)
-pub fn variant(self:Self) u2 {
+/// Returns the 2-bit variant field of this UUID.
+///
+/// For RFC 9562 UUIDs the value is `0b10`. The variant occupies
+/// bits 62-63 (counting from the LSB) of the 128-bit representation.
+pub fn variant(self: Self) u2 {
     return @truncate(self.bits >> 62);
-
 }
 
-// Version is bits 48-51 (4 bits) from the MSB
-// In the 128-bit value: bits [79:76] (shift right by 76)
-pub fn version(self:Self) u4 {
-    return @truncate(self.bits >>  76) ;
+/// Returns the 4-bit version field of this UUID.
+///
+/// For v7 UUIDs the value is `7` (`0b0111`). The version occupies
+/// bits 76-79 (counting from the LSB) of the 128-bit representation.
+pub fn version(self: Self) u4 {
+    return @truncate(self.bits >> 76);
 }
 
-// supports both hyphenated and non hyphenated uuid strings
+/// Parses a UUID from its string representation.
+///
+/// Accepts both the standard hyphenated format (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`,
+/// 36 characters) and the compact hex format (32 characters, no hyphens).
+///
+/// Returns `error.InvalidUuidString` if the length is neither 32 nor 36.
+/// Returns `error.InvalidCharacter` if any non-hyphen character is not valid hexadecimal.
 pub fn fromString(str: []const u8) !Self {
     if (!(str.len == 36 or str.len == 32)) {
-        return error.InvalidUuuidString;
+        return error.InvalidUuidString;
     }
 
     var string: [32]u8 = undefined;
@@ -94,14 +122,25 @@ pub fn fromString(str: []const u8) !Self {
     return Self{ .bits = int };
 }
 
+/// Returns `true` if both UUIDs have the same 128-bit value.
 pub fn eql(self: Self, other: Self) bool {
     return self.bits == other.bits;
 }
 
+/// Returns `true` if this UUID's 128-bit value is strictly greater than `other`.
+///
+/// For v7 UUIDs that share the same timestamp, this compares the random bits.
+/// Across different timestamps, a later UUID will be greater because the
+/// timestamp occupies the most significant 48 bits.
 pub fn greaterThan(self: Self, other: Self) bool {
     return self.bits > other.bits;
 }
 
+/// Formats the UUID as the standard hyphenated lowercase hex string
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (36 characters, 8-4-4-4-12).
+///
+/// The returned array is stack-allocated and can be used directly
+/// or copied as needed.
 pub fn toString(self: Self) [36]u8 {
     var buf: [36]u8 = undefined;
 
