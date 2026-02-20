@@ -69,8 +69,9 @@ pub const UUID = struct {
     }
 
 
+    // supports both hyphenated and non hyphenated uuid strings
     pub fn fromString(str : []const u8) !Self {
-       if (str.len != 36 ) {
+       if (!(str.len == 36 or  str.len == 32)) {
            return error.InvalidUuuidString;
        }
 
@@ -102,37 +103,29 @@ pub const UUID = struct {
     }
 
 
-    pub fn toString(self:Self) ![36]u8 {
+    pub fn toString(self:Self) [36]u8 {
 
        var buf : [36]u8 = undefined;
 
-       var chars :[32]u8 = undefined;
+       // var chars :[32]u8 = undefined;
+       var nibble_index : u7 = 124; // starting pos of nibble to left 
 
-       for (0..32) | i | {
-         var nibble : u4 = 0;
-         const offset = i * 4; // 4 bits = 1 nibble = 1 hex char;
-         inline for (0..4) | j | {
-
-             // bit 0   = least significant bit
-             // bit 127 = most significant bit
-             const bit_index: u7 = @intCast(127 - (offset + j));
-
-             if (((self.bits >> bit_index) & 1) != 0 ) {
-                 const mask : u4 = 1 << (3-j) ;
-                 nibble = nibble | mask;
-             }
+       for (0..36) | i | {
+ 
+         if (i == 8 or i == 13 or i == 18 or i == 23){
+             buf[i] = '-';
+             continue;
          }
 
-         chars[i] = hex_chars[nibble];
+
+         const nibble : u4 = @truncate((self.bits >> nibble_index) ) ; // truncating gets the 4 LSB ( same as & 0xF)
+         buf[i] = hex_chars[nibble]; 
+
+         if (i != 35){
+            nibble_index -= 4;
+         }
        }
 
-       const g1 = chars[0..8];
-       const g2 = chars[8..12];
-       const g3 = chars[12..16];
-       const g4 = chars[16..20];
-       const g5 = chars[20..];
-
-       _ = try std.fmt.bufPrint(&buf,"{s}-{s}-{s}-{s}-{s}",.{g1,g2,g3,g4,g5});
        return buf;
     }
 
@@ -147,7 +140,9 @@ test "from integer" {
 
    const uuid = UUID{.bits = bitArray};
    // var buf : [36]u8 = undefined;
-   const string =  try uuid.toString();
+   const string =  uuid.toString();
+
+   // std.debug.print("from integer string {s} \n", .{string});
    try std.testing.expectEqual(true,std.mem.eql(u8, &string,"f81d4fae-7dec-11d0-a765-00a0c91e6bf6"));
 
 
@@ -176,7 +171,8 @@ test "uuid v7 generation" {
 test "to and from string" {
    const uuid = UUID.initV7();
 
-   const string =  try uuid.toString();
+   const string =   uuid.toString();
+   // std.debug.print("string {s}", .{string});
    const uuid2 = try UUID.fromString(&string);
 
    try std.testing.expect(uuid.bits == uuid2.bits);
@@ -218,17 +214,16 @@ test "Benchmark v7 creation" {
     );
 }
 
-// Benchmark tests
 test "Benchmark to string" {
+
     const iterations = 1_000_000;
 
     const uuid = UUID.initV7();
+
     var timer = try std.time.Timer.start();
 
-
-    for (0..iterations) |_| { 
-        _ = try uuid.toString();
-        
+    for (0..iterations) |_| {
+        std.mem.doNotOptimizeAway(uuid.toString());
     }
 
     const elapsed = timer.read();
@@ -249,3 +244,4 @@ test "Benchmark to string" {
         },
     );
 }
+
