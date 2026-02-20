@@ -1,5 +1,5 @@
 const std = @import("std");
-const UUID = @import("Uuid.zig").UUID; // your implementation
+const UUID = @import("root").UUID; // your implementation
 
 pub fn main() !void {
     const iterations = 1_000_000;
