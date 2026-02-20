@@ -587,7 +587,7 @@ test "Benchmark v7 creation" {
 
 
 test "Benchmark v4 creation" {
-   try benchmarkCreation("UUIDv7", initV4) ;
+   try benchmarkCreation("UUIDv4", initV4) ;
 }
 
 test "Benchmark to string" {
